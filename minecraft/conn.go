@@ -681,12 +681,19 @@ func (conn *Conn) deferPacket(pk *packetData) {
 	conn.deferredPacketMu.Unlock()
 }
 
+// ReceiveHook, if set, is called with every packet a connection receives, as it arrives: before it waits its
+// turn to be returned by ReadPacket. It must be quick and must not keep payload.
+var ReceiveHook func(conn *Conn, id uint32, payload []byte)
+
 // receive receives an incoming serialised packet from the underlying connection. If the connection is not yet
 // logged in, the packet is immediately handled.
 func (conn *Conn) receive(data []byte) error {
 	pkData, err := parseData(data, conn)
 	if err != nil {
 		return err
+	}
+	if h := ReceiveHook; h != nil {
+		h(conn, pkData.h.PacketID, pkData.payload.Bytes())
 	}
 	if pkData.h.PacketID == packet.IDDisconnect {
 		// We always handle disconnect packets and close the connection if one comes in.
