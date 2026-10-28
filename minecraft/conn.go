@@ -103,7 +103,9 @@ type Conn struct {
 	disconnectOnInvalidPacket bool
 
 	identityData login.IdentityData
-	clientData   login.ClientData
+	// connectionRequest is the raw login request of a client connected to a Listener.
+	connectionRequest []byte
+	clientData        login.ClientData
 
 	gameData         GameData
 	gameDataReceived atomic.Bool
@@ -253,6 +255,12 @@ func newConn(netConn net.Conn, key *ecdsa.PrivateKey, log *slog.Logger, proto Pr
 		}
 	}()
 	return conn
+}
+
+// ConnectionRequest returns the raw login request the client sent (its signed chain or token and its client
+// data JWT), or nil for a connection obtained using a Dialer.
+func (conn *Conn) ConnectionRequest() []byte {
+	return conn.connectionRequest
 }
 
 // IdentityData returns the identity data of the connection. It holds the UUID, XUID and username of the
@@ -833,6 +841,7 @@ func (conn *Conn) handleLogin(pk *packet.Login) error {
 		err        error
 		authResult login.AuthResult
 	)
+	conn.connectionRequest = append([]byte(nil), pk.ConnectionRequest...)
 	conn.identityData, conn.clientData, authResult, err = login.Parse(pk.ConnectionRequest, conn.verifier)
 	if err != nil {
 		return fmt.Errorf("parse login request: %w", err)
