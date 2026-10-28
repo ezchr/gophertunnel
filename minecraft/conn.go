@@ -346,6 +346,26 @@ func (conn *Conn) StartGameContext(ctx context.Context, data GameData) error {
 	}
 }
 
+// SendStartGame sends the packets that start a game for a client connected to a Listener without waiting for
+// the client to finish spawning, e.g. to send it a Transfer right after. Most callers should use StartGame,
+// which waits until the client has spawned.
+func (conn *Conn) SendStartGame(data GameData) {
+	if conn.gameDataReceived.Load() {
+		panic("(*Conn).SendStartGame must only be called on Listener connections")
+	}
+	if data.WorldName == "" {
+		data.WorldName = conn.gameData.WorldName
+	}
+	conn.gameData = data
+	for _, item := range data.Items {
+		if item.Name == "minecraft:shield" {
+			conn.shieldID.Store(int32(item.RuntimeID))
+		}
+	}
+	conn.waitingForSpawn.Store(true)
+	conn.startGame()
+}
+
 // DoSpawn starts the game for the client in the server. DoSpawn should be called for a Conn obtained using
 // minecraft.Dial(). Use Conn.StartGame to spawn a Conn obtained using a minecraft.Listener.
 // DoSpawn will start the spawning sequence using the game data found in conn.GameData(), which was sent
