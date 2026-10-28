@@ -125,6 +125,20 @@ func FuncIOSlice[T any, S ~*[]T](r IO, x S, f func(IO, *T)) {
 
 const maxSliceLength = 1024
 
+// SliceLimit reads/writes a slice of T with a varuint32 length prefix like Slice, but allows up to max
+// elements when reading instead of maxSliceLength.
+func SliceLimit[T any, S ~*[]T, A PtrMarshaler[T]](r IO, x S, max uint32) {
+	count := uint32(len(*x))
+	r.Varuint32(&count)
+	if limit, ok := r.(sliceReader); ok {
+		limit.SliceLength(count, max)
+		*x = make([]T, count)
+	}
+	for i := uint32(0); i < count; i++ {
+		A(&(*x)[i]).Marshal(r)
+	}
+}
+
 // SliceOfLen reads/writes the elements of a slice of type T with length l.
 func SliceOfLen[T any, S ~*[]T, A PtrMarshaler[T]](r IO, l uint32, x S) {
 	limit, ok := r.(sliceReader)

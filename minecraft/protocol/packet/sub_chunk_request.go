@@ -22,6 +22,8 @@ func (*SubChunkRequest) ID() uint32 {
 
 func (pk *SubChunkRequest) Marshal(io protocol.IO) {
 	io.Varint32(&pk.Dimension)
-	protocol.Slice(io, &pk.Offsets)
+	// Clients at a high render distance, or loading a freshly pasted build, request more than the generic
+	// 1024-element slice limit in one packet.
+	protocol.SliceLimit(io, &pk.Offsets, 4096)
 	io.SubChunkPos(&pk.Position)
 }
