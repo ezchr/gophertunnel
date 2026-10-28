@@ -309,11 +309,12 @@ func oidcVerifier(ctx context.Context) (*oidc.IDTokenVerifier, error) {
 // use the Conn.ReadPacket() and Conn.WritePacket() methods.
 // Accept returns an error if the listener is closed.
 func (listener *Listener) Accept() (net.Conn, error) {
-	conn, ok := <-listener.incoming
-	if !ok {
+	select {
+	case conn := <-listener.incoming:
+		return conn, nil
+	case <-listener.close:
 		return nil, &net.OpError{Op: "accept", Net: "minecraft", Addr: listener.Addr(), Err: net.ErrClosed}
 	}
-	return conn, nil
 }
 
 // Disconnect disconnects a Minecraft Conn passed by first sending a disconnect with the message passed, and
@@ -395,8 +396,10 @@ func (listener *Listener) listen() {
 		}
 	}()
 	defer func() {
+		// listener.incoming is never closed: a connection that finishes logging in at this point may still be
+		// selecting on it in handleConn, and a send on a closed channel would panic. Accept watches
+		// listener.close instead.
 		close(listener.close)
-		close(listener.incoming)
 		_ = listener.Close()
 	}()
 	for {
