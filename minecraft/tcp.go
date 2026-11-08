@@ -205,6 +205,10 @@ func newTCPConn(c net.Conn, flags byte) *tcpConn {
 	return &tcpConn{Conn: c, r: bufio.NewReaderSize(c, 64<<10), flags: flags}
 }
 
+// Latency reports the round trip time of the connection, which Conn.Latency requires. A TCP link
+// is meant for a proxy on the same machine, where it is close to nothing, so it reports 0.
+func (c *tcpConn) Latency() time.Duration { return 0 }
+
 // DisableEncryption reports whether the client asked for no encryption. It implements packet.EncryptionDisabler.
 func (c *tcpConn) DisableEncryption() bool { return c.flags&tcpNoEncryption != 0 }
 
