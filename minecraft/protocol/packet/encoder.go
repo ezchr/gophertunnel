@@ -103,7 +103,7 @@ func (encoder *Encoder) Encode(packets [][]byte) error {
 	data := buf.Bytes()
 	if compression != nil {
 		batch := data[batchStart:]
-		if len(batch) < encoder.compressionThreshold {
+		if _, none := compression.(nopCompression); none || len(batch) < encoder.compressionThreshold {
 			data[len(encoder.header)] = byte(NopCompression.EncodeCompression())
 		} else {
 			compressedBuf = internal.BufferPool.Get().(*bytes.Buffer)

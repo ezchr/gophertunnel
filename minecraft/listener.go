@@ -466,6 +466,9 @@ func (listener *Listener) createConn(netConn net.Conn) {
 	conn.compressionSelector = listener.cfg.CompressionSelector
 	conn.compressionThreshold = listener.cfg.CompressionThreshold
 	conn.maxDecompressedLen = listener.cfg.MaxDecompressedLen
+	if d, ok := netConn.(packet.CompressionDisabler); ok && d.DisableCompression() {
+		conn.compression, conn.compressionSelector = packet.NopCompression, nil
+	}
 	conn.pool = conn.proto.Packets(true)
 	conn.allow = listener.cfg.Allow
 

@@ -35,3 +35,9 @@ type TransportCapabilities interface {
 	EncryptionDisabler
 	PacketReader
 }
+
+// CompressionDisabler is implemented by a net.Conn that asks for its packets not to be compressed, such as a
+// TCP connection from a proxy on the same machine. A Listener then answers it with CompressionAlgorithmNone.
+type CompressionDisabler interface {
+	DisableCompression() bool
+}

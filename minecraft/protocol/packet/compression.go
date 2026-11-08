@@ -254,6 +254,7 @@ func appendReader(dst []byte, r io.Reader, limit int) ([]byte, error) {
 func init() {
 	RegisterCompression(flateCompression{})
 	RegisterCompression(snappyCompression{})
+	RegisterCompression(nopCompression{})
 }
 
 var compressions = map[uint16]Compression{}
