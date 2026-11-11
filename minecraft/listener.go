@@ -394,6 +394,10 @@ func (listener *Listener) Accept() (net.Conn, error) {
 // closing the connection after. If the message passed is empty, the client will be immediately sent to the
 // server list instead of a disconnect screen.
 func (listener *Listener) Disconnect(conn *Conn, message string) error {
+	if conn.parent != nil {
+		// A split-screen guest: only its own screen shows the message, the main player stays.
+		return conn.close(subClientClose{pk: &packet.Disconnect{HideDisconnectionScreen: message == "", Message: message}})
+	}
 	_ = conn.WritePacket(&packet.Disconnect{
 		HideDisconnectionScreen: message == "",
 		Message:                 message,
@@ -552,7 +556,7 @@ func (listener *Listener) createConn(netConn net.Conn) {
 func (listener *Listener) acceptSubClient(guest *Conn) {
 	if !listener.group.add(listener.cfg.MaximumPlayers) {
 		_ = guest.WritePacket(&packet.PlayStatus{Status: packet.PlayStatusLoginFailedServerFull})
-		_ = guest.close(guest.closeErr("server full"))
+		_ = guest.close(subClientClose{err: errors.New("server full")}) // the PlayStatus says it
 		return
 	}
 	listener.updatePongData()
