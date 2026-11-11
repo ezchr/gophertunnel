@@ -133,6 +133,14 @@ type ListenConfig struct {
 	// the default value is 16MB (16 * 1024 * 1024). Setting this to a negative integer disables the limit.
 	MaxDecompressedLen int
 
+	// AllowSubClients enables split-screen players (sub-clients). If true, a guest that joins on the
+	// connection of a player is logged in and returned by Listener.Accept as a *Conn of its own, with
+	// Conn.SubClientID and Conn.Parent set. A guest counts towards MaximumPlayers, is checked by Allow
+	// and must be authenticated unless AuthenticationDisabled is set. It shares the network connection of
+	// its main player and is closed when that player's Conn closes. If false (by default), the packets of
+	// guests are returned by the main player's Conn as before.
+	AllowSubClients bool
+
 	// Allow filters what connections are allowed to connect to the Server. The
 	// address, identity data, and client data of the connection are passed. If
 	// Allow returns false, the connection is closed with the string returned as
@@ -482,6 +490,10 @@ func (listener *Listener) createConn(netConn net.Conn) {
 	conn.verifier = listener.verifier
 	conn.disconnectOnUnknownPacket = !listener.cfg.AllowUnknownPackets
 	conn.disconnectOnInvalidPacket = !listener.cfg.AllowInvalidPackets
+	if listener.cfg.AllowSubClients {
+		conn.subClientsEnabled.Store(true)
+		conn.onSubClient = listener.acceptSubClient
+	}
 
 	if !listener.group.add(listener.cfg.MaximumPlayers) {
 		// The server was full. We kick the player immediately and close the connection.
@@ -505,6 +517,28 @@ func (listener *Listener) createConn(netConn net.Conn) {
 		if timer != nil {
 			timer.Stop()
 		}
+	}()
+}
+
+// acceptSubClient admits a guest that logged in on one of the listener's connections and passes it to
+// Accept.
+func (listener *Listener) acceptSubClient(guest *Conn) {
+	if !listener.group.add(listener.cfg.MaximumPlayers) {
+		_ = guest.WritePacket(&packet.PlayStatus{Status: packet.PlayStatusLoginFailedServerFull})
+		_ = guest.close(guest.closeErr("server full"))
+		return
+	}
+	listener.updatePongData()
+	go func() {
+		select {
+		case listener.incoming <- guest:
+		case <-listener.close:
+			_ = guest.Close()
+		case <-guest.ctx.Done():
+		}
+		<-guest.ctx.Done()
+		listener.group.remove()
+		listener.updatePongData()
 	}()
 }
 
