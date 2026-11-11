@@ -217,6 +217,11 @@ func (conn *Conn) handleSubClientLogin(id byte, pkData *packetData) {
 		verifier = conn.subClientVerifier
 	}
 	identityData, clientData, authResult, err := login.ParseSubClient(pk.ConnectionRequest, verifier, conn.clientData)
+	if err != nil && conn.verifier == nil && verifier != nil {
+		// Authentication is off: a login that fails the VerifySubClients check (a self-signed one) is
+		// read without it, as unauthenticated.
+		identityData, clientData, authResult, err = login.ParseSubClient(pk.ConnectionRequest, nil, conn.clientData)
+	}
 	if err != nil {
 		reject(fmt.Errorf("parse login request: %w", err), &packet.Disconnect{Reason: packet.DisconnectReasonNotAuthenticated})
 		return
