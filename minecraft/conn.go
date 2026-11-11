@@ -203,6 +203,24 @@ type Conn struct {
 	shieldID atomic.Int32
 
 	additional chan packet.Packet
+
+	// parent is the main Conn of a split-screen guest, and nil for a main connection. subClientID is the
+	// guest's sub-client ID, 0 for a main connection.
+	parent      *Conn
+	subClientID byte
+	// subMu protects subClients, the guests of a main connection by sub-client ID.
+	subMu      sync.Mutex
+	subClients map[byte]*Conn
+	// subClientsEnabled makes the Conn route packets with a non-zero sub-client ID to its guests. When
+	// false, such packets are handled by the Conn itself, as they always were.
+	subClientsEnabled atomic.Bool
+	// onSubClient is called with a guest once it logged in on a Listener connection.
+	onSubClient func(guest *Conn)
+	// dialer is true for connections obtained using a Dialer. dialAddress and legacyAuth are the address
+	// and auth mode they were dialed with, used to log in guests.
+	dialer      bool
+	dialAddress string
+	legacyAuth  bool
 }
 
 // newConn creates a new Minecraft connection for the net.Conn passed, reading and writing compressed
@@ -423,8 +441,10 @@ func (conn *Conn) WritePacket(pk packet.Packet) error {
 		return conn.closeErr("write packet")
 	default:
 	}
-	conn.sendMu.Lock()
-	defer conn.sendMu.Unlock()
+	// A guest's packets are buffered on its main connection.
+	out := conn.transport()
+	out.sendMu.Lock()
+	defer out.sendMu.Unlock()
 
 	buf := internal.BufferPool.Get().(*bytes.Buffer)
 	defer func() {
@@ -444,9 +464,17 @@ func (conn *Conn) WritePacket(pk packet.Packet) error {
 		if conn.packetFunc != nil {
 			conn.packetFunc(*conn.hdr, buf.Bytes()[l:], conn.LocalAddr(), conn.RemoteAddr())
 		}
-		conn.bufferedSend = append(conn.bufferedSend, append([]byte(nil), buf.Bytes()...))
+		out.bufferedSend = append(out.bufferedSend, append([]byte(nil), buf.Bytes()...))
 	}
 	return nil
+}
+
+// transport returns the Conn that owns the network connection: the main Conn for a guest, or conn itself.
+func (conn *Conn) transport() *Conn {
+	if conn.parent != nil {
+		return conn.parent
+	}
+	return conn
 }
 
 // ReadPacket reads a packet from the Conn, depending on the packet ID that is found in front of the packet
@@ -505,10 +533,11 @@ func (conn *Conn) ResourcePacks() []*resource.Pack {
 // Write writes a slice of serialised packet data to the Conn. The data is buffered until the next 20th of a
 // tick, after which it is flushed to the connection. Write returns the amount of bytes written n.
 func (conn *Conn) Write(b []byte) (n int, err error) {
-	conn.sendMu.Lock()
-	defer conn.sendMu.Unlock()
+	out := conn.transport()
+	out.sendMu.Lock()
+	defer out.sendMu.Unlock()
 
-	conn.bufferedSend = append(conn.bufferedSend, b)
+	out.bufferedSend = append(out.bufferedSend, b)
 	return len(b), nil
 }
 
@@ -561,6 +590,10 @@ func (conn *Conn) Flush() error {
 	case <-conn.ctx.Done():
 		return conn.closeErr("flush")
 	default:
+	}
+	if conn.parent != nil {
+		// A guest's packets are sent with those of its main connection.
+		return conn.parent.Flush()
 	}
 
 	conn.encMu.Lock()
@@ -729,6 +762,15 @@ func (conn *Conn) receive(data []byte) error {
 	if err != nil {
 		return err
 	}
+	if pkData.h.SenderSubClient != 0 && conn.subClientsEnabled.Load() {
+		return conn.receiveSubClient(pkData)
+	}
+	return conn.receivePacket(pkData)
+}
+
+// receivePacket handles a parsed packet of the Conn. Before the connection is logged in, the packet is
+// handled immediately.
+func (conn *Conn) receivePacket(pkData *packetData) error {
 	if h := ReceiveHook; h != nil {
 		h(conn, pkData.h.PacketID, pkData.payload.Bytes())
 	}
@@ -1583,6 +1625,10 @@ func (conn *Conn) handleSetLocalPlayerAsInitialised(pk *packet.SetLocalPlayerAsI
 func (conn *Conn) handlePlayStatus(pk *packet.PlayStatus) error {
 	switch pk.Status {
 	case packet.PlayStatusLoginSuccess:
+		if conn.parent != nil {
+			// A guest has no resource pack step: StartGame follows directly.
+			return nil
+		}
 		if err := conn.WritePacket(&packet.ClientCacheStatus{Enabled: conn.cacheEnabled}); err != nil {
 			return fmt.Errorf("send ClientCacheStatus: %w", err)
 		}
@@ -1709,6 +1755,9 @@ func (conn *Conn) closeTransport(cause error) {
 }
 
 func (conn *Conn) close(cause error) error {
+	if conn.parent != nil {
+		return conn.closeSubClient(cause)
+	}
 	var err error
 	conn.once.Do(func() {
 		err = conn.Flush()

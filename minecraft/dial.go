@@ -308,6 +308,9 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	conn.disconnectOnInvalidPacket = d.DisconnectOnInvalidPackets
 	conn.disconnectOnUnknownPacket = d.DisconnectOnUnknownPackets
 	conn.maxDecompressedLen = d.MaxDecompressedLen
+	conn.dialer = true
+	conn.dialAddress = address
+	conn.legacyAuth = d.EnableLegacyAuth
 
 	defaultIdentityData(&conn.identityData)
 	defaultClientData(address, conn.identityData.DisplayName, &conn.clientData)
