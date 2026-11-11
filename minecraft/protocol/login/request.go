@@ -466,6 +466,18 @@ func EncodeOffline(identityData IdentityData, data ClientData, key *ecdsa.Privat
 	return encodeRequest(req)
 }
 
+// EncodeGuest creates the login request of a split-screen guest without an account of its own, as a
+// console sends it in a SubClientLogin: AuthenticationType 1 (guest) with the main player's multiplayer
+// token, and client data signed with key, the main player's key (the one the token was issued for).
+func EncodeGuest(token string, data ClientData, key *ecdsa.PrivateKey) []byte {
+	signer, _ := jose.NewSigner(jose.SigningKey{Key: key, Algorithm: jose.ES384}, &jose.SignerOptions{
+		ExtraHeaders: map[jose.HeaderKey]any{"x5u": MarshalPublicKey(&key.PublicKey)},
+	})
+	req := &request{AuthenticationType: 1, Token: token}
+	req.RawToken, _ = jwt.Signed(signer).Claims(data).Serialize()
+	return encodeRequest(req)
+}
+
 // tokenClaims holds the claims for the multiplayer token from the first chain,
 // which contains the fields related to the identity of the player.
 type tokenClaims struct {

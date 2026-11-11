@@ -226,6 +226,9 @@ type Conn struct {
 	dialer      bool
 	dialAddress string
 	legacyAuth  bool
+	// loginRequest is the login request a Dialer connection logged in with; a guest logging in as the
+	// main player's guest uses its token.
+	loginRequest []byte
 }
 
 // newConn creates a new Minecraft connection for the net.Conn passed, reading and writing compressed

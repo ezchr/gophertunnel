@@ -74,3 +74,23 @@ func TestParseGuestLogin(t *testing.T) {
 		t.Fatalf("regular sub-client login: guest %v err %v", res.Guest, err)
 	}
 }
+
+func TestEncodeGuest(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	full := guestClientData()
+	full.GameVersion, full.ServerAddress, full.LanguageCode = "1.26.60", "example.com:19132", "en_US"
+	host := EncodeOffline(IdentityData{XUID: "2535400000000000", DisplayName: "Host"}, full, key, false)
+	n := binary.LittleEndian.Uint32(host)
+	var m struct{ Token string }
+	if err := json.Unmarshal(host[4:4+n], &m); err != nil || m.Token == "" {
+		t.Fatalf("host token: %v", err)
+	}
+	req := EncodeGuest(m.Token, guestClientData(), key)
+	if _, _, _, err := Parse(req, nil); err == nil {
+		t.Fatal("Parse accepted a guest login")
+	}
+	id, cd, res, err := ParseSubClient(req, nil, full)
+	if err != nil || !res.Guest || id.XUID != "2535400000000000" || cd.GameVersion != "1.26.60" {
+		t.Fatalf("guest %v xuid %q version %q err %v", res.Guest, id.XUID, cd.GameVersion, err)
+	}
+}

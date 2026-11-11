@@ -344,3 +344,105 @@ func TestSubClientGuestLogin(t *testing.T) {
 		t.Fatal("guest login of another account accepted")
 	}
 }
+
+// startSubClientServer listens with sub-clients allowed and returns the listener, a dialed main Conn
+// and the server side of it. Accepted conns after the first come out of next.
+func startSubClientServer(t *testing.T) (l *Listener, client, server *Conn, next func() *Conn) {
+	t.Helper()
+	l, err := ListenConfig{AuthenticationDisabled: true, AllowSubClients: true}.Listen("raknet", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	acc := make(chan *Conn, 4)
+	go func() {
+		for rid := uint64(1); ; rid++ {
+			c, err := acceptAndSpawn(l, rid)
+			if err != nil {
+				return
+			}
+			acc <- c
+		}
+	}()
+	next = func() *Conn {
+		t.Helper()
+		select {
+		case c := <-acc:
+			return c
+		case <-time.After(15 * time.Second):
+			t.Fatal("timed out waiting for a connection")
+		}
+		return nil
+	}
+	client, err = Dialer{IdentityData: login.IdentityData{DisplayName: "Host"}}.DialTimeout("raknet", l.Addr().String(), 15*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return l, client, next(), next
+}
+
+// waitClosed waits for c to close and returns the cause.
+func waitClosed(t *testing.T, c *Conn) error {
+	t.Helper()
+	select {
+	case <-c.Context().Done():
+		return context.Cause(c.Context())
+	case <-time.After(10 * time.Second):
+		t.Fatal("conn not closed")
+	}
+	return nil
+}
+
+func TestSubClientServerCloseDisconnectsGuest(t *testing.T) {
+	l, client, server, next := startSubClientServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Close sends the guest a Disconnect without a message.
+	guest, err := client.LoginSubClient(ctx, login.IdentityData{DisplayName: "One"}, login.ClientData{})
+	if err != nil {
+		t.Fatalf("guest login: %v", err)
+	}
+	_ = next().Close()
+	var d DisconnectError
+	if cause := waitClosed(t, guest); !errors.As(cause, &d) {
+		t.Fatalf("guest closed with %v, want a disconnect", cause)
+	}
+
+	// Listener.Disconnect sends the message, to the guest only.
+	guest, err = client.LoginSubClient(ctx, login.IdentityData{DisplayName: "Two"}, login.ClientData{})
+	if err != nil {
+		t.Fatalf("second guest login: %v", err)
+	}
+	_ = l.Disconnect(next(), "bye guest")
+	if cause := waitClosed(t, guest); !errors.As(cause, &d) || string(d) != "bye guest" {
+		t.Fatalf("guest closed with %v, want the message", cause)
+	}
+	sendText(t, client, "host fine")
+	if msg, err := readText(server, 5*time.Second); err != nil || msg != "host fine" {
+		t.Fatalf("host after guest kicks: %q, %v", msg, err)
+	}
+}
+
+func TestSubClientLoginAsGuestOfHost(t *testing.T) {
+	_, client, server, next := startSubClientServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := client.LoginSubClientWith(ctx, SubClientLogin{Guest: true, Auth: &Dialer{}}); err == nil {
+		t.Fatal("Auth and Guest both set accepted")
+	}
+	guest, err := client.LoginSubClientWith(ctx, SubClientLogin{Guest: true, ClientData: login.ClientData{ThirdPartyName: "Player 2"}})
+	if err != nil {
+		t.Fatalf("guest login: %v", err)
+	}
+	sg := next()
+	want := DefaultSubClientIdentity(server.IdentityData(), 1, login.ClientData{})
+	if got := sg.IdentityData(); got.Identity != want.Identity || got.DisplayName != "Host_1" {
+		t.Fatalf("guest identity %+v, want %+v", got, want)
+	}
+	sendText(t, guest, "as guest")
+	if msg, err := readText(sg, 5*time.Second); err != nil || msg != "as guest" {
+		t.Fatalf("guest read %q, %v", msg, err)
+	}
+}

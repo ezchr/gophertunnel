@@ -5,14 +5,18 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"slices"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sandertv/gophertunnel/minecraft/auth"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 	"github.com/sandertv/gophertunnel/minecraft/text"
@@ -64,18 +68,89 @@ func (conn *Conn) SubClients() []*Conn {
 // guest logs in offline with the identity and client data passed (unset fields are filled like a Dialer
 // does) and is spawned before LoginSubClient returns. The guest gets the lowest free sub-client ID.
 func (conn *Conn) LoginSubClient(ctx context.Context, identityData login.IdentityData, clientData login.ClientData) (*Conn, error) {
+	return conn.LoginSubClientWith(ctx, SubClientLogin{IdentityData: identityData, ClientData: clientData})
+}
+
+// SubClientLogin holds how Conn.LoginSubClientWith logs a split-screen guest in. Without Auth or
+// Guest set, the guest logs in offline with IdentityData, like a Dialer without a TokenSource.
+type SubClientLogin struct {
+	// IdentityData and ClientData are the guest's. Unset fields are filled like a Dialer does.
+	IdentityData login.IdentityData
+	ClientData   login.ClientData
+	// Auth, if not nil, logs the guest in with an Xbox Live account of its own. Its TokenSource,
+	// XBLClient, PlayFabClient, HTTPClient and EnableLegacyAuth are used as Dialer uses them; other
+	// fields are ignored.
+	Auth *Dialer
+	// Guest logs the guest in as a guest of the main player, as a console does for a player without an
+	// account of its own: AuthenticationType 1, with the main player's multiplayer token and key.
+	// Servers that accept it give the guest an identity derived from the main player's.
+	Guest bool
+}
+
+// LoginSubClientWith logs a split-screen guest in over the connection of a Conn obtained using a
+// Dialer, as l says. The guest is spawned before LoginSubClientWith returns, and gets the lowest free
+// sub-client ID.
+func (conn *Conn) LoginSubClientWith(ctx context.Context, l SubClientLogin) (*Conn, error) {
 	if conn.parent != nil || !conn.dialer {
 		return nil, errSubClientsDisabled
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate key: %w", err)
+	identityData, clientData := l.IdentityData, l.ClientData
+	var request []byte
+	switch {
+	case l.Auth != nil && l.Guest:
+		return nil, errors.New("login sub-client: Auth and Guest cannot both be set")
+	case l.Guest:
+		token := requestToken(conn.loginRequest)
+		if token == "" {
+			return nil, errors.New("login sub-client: the main connection has no multiplayer token to log a guest in with")
+		}
+		defaultIdentityData(&identityData)
+		defaultClientData(conn.dialAddress, identityData.DisplayName, &clientData)
+		request = login.EncodeGuest(token, clientData, conn.privateKey)
+	case l.Auth != nil:
+		key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate key: %w", err)
+		}
+		d := *l.Auth
+		if d.HTTPClient == nil {
+			d.HTTPClient = http.DefaultClient
+		}
+		chainData, token, _, err := d.authenticate(auth.WithContextClient(ctx, d.HTTPClient), key)
+		if err != nil {
+			return nil, fmt.Errorf("login sub-client: %w", err)
+		}
+		identityData = d.IdentityData
+		defaultClientData(conn.dialAddress, identityData.DisplayName, &clientData)
+		setAndroidData(&clientData)
+		request = login.Encode(chainData, clientData, key, token, d.EnableLegacyAuth)
+	default:
+		key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate key: %w", err)
+		}
+		defaultIdentityData(&identityData)
+		clearXBLIdentityData(&identityData)
+		defaultClientData(conn.dialAddress, identityData.DisplayName, &clientData)
+		request = login.EncodeOffline(identityData, clientData, key, conn.legacyAuth)
 	}
-	defaultIdentityData(&identityData)
-	clearXBLIdentityData(&identityData)
-	defaultClientData(conn.dialAddress, identityData.DisplayName, &clientData)
-	request := login.EncodeOffline(identityData, clientData, key, conn.legacyAuth)
 	return conn.loginSubClient(ctx, request, identityData, clientData)
+}
+
+// requestToken returns the multiplayer token of a login request, or an empty string.
+func requestToken(request []byte) string {
+	if len(request) < 4 {
+		return ""
+	}
+	n := int(binary.LittleEndian.Uint32(request))
+	if n < 0 || n > len(request)-4 {
+		return ""
+	}
+	var r struct{ Token string }
+	if json.Unmarshal(request[4:4+n], &r) != nil {
+		return ""
+	}
+	return r.Token
 }
 
 // loginSubClient logs a guest in with the login request passed.
@@ -208,8 +283,7 @@ func (conn *Conn) handleSubClientLogin(id byte, pkData *packetData) {
 	}
 	reject := func(err error, pk *packet.Disconnect) {
 		guest.log.Debug("sub-client login rejected: " + err.Error())
-		_ = guest.WritePacket(pk)
-		_ = guest.close(err)
+		_ = guest.close(subClientClose{err: err, pk: pk})
 	}
 
 	verifier := conn.verifier
@@ -289,20 +363,54 @@ func DefaultSubClientIdentity(host login.IdentityData, sub byte, _ login.ClientD
 	}
 }
 
-// closeSubClient closes a guest without closing the main connection. A guest of a Dialer connection tells
-// the server it left with a Disconnect packet, unless the server disconnected it.
+// closeSubClient closes a guest without closing the main connection. Like closing a connection, it
+// sends the other side a Disconnect for the guest (with no message: a server's guest goes back to the
+// game, a client's guest leaves), unless the other side disconnected the guest or the main connection
+// is closing. Listener.Disconnect closes a server's guest with a message.
 func (conn *Conn) closeSubClient(cause error) error {
 	var err error
 	conn.once.Do(func() {
+		// The other side is told the guest is gone, unless it said so itself or the whole
+		// connection is closing.
 		var disconnected DisconnectError
-		if conn.dialer && !errors.As(cause, &disconnected) && conn.parent.ctx.Err() == nil && conn.ctx.Err() == nil {
-			_ = conn.WritePacket(&packet.Disconnect{HideDisconnectionScreen: true})
+		if !errors.As(cause, &disconnected) && conn.parent.ctx.Err() == nil && conn.ctx.Err() == nil {
+			pk := &packet.Disconnect{HideDisconnectionScreen: true}
+			var c subClientClose
+			if errors.As(cause, &c) {
+				pk = c.pk
+			}
+			if pk != nil {
+				_ = conn.WritePacket(pk)
+			}
 		}
 		err = conn.Flush()
 		conn.cancelFunc(cause)
 		conn.parent.removeSubClient(conn)
 	})
 	return err
+}
+
+// subClientClose closes a guest with the Disconnect packet pk sent to it, or none if pk is nil.
+type subClientClose struct {
+	err error
+	pk  *packet.Disconnect
+}
+
+func (c subClientClose) Error() string {
+	if c.err != nil {
+		return c.err.Error()
+	}
+	if c.pk != nil && c.pk.Message != "" {
+		return "disconnected: " + c.pk.Message
+	}
+	return net.ErrClosed.Error()
+}
+
+func (c subClientClose) Unwrap() error {
+	if c.err != nil {
+		return c.err
+	}
+	return net.ErrClosed
 }
 
 // subClientHeader returns the header a guest writes its packets with: a client writes its ID in bits
