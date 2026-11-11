@@ -213,6 +213,9 @@ type Conn struct {
 	// subClientsEnabled makes the Conn route packets with a non-zero sub-client ID to its guests. When
 	// false, such packets are handled by the Conn itself, as they always were.
 	subClientsEnabled atomic.Bool
+	// subClientVerifier verifies the Xbox Live token of guests when verifier is nil (authentication
+	// disabled), so that a guest with a valid token keeps its XUID.
+	subClientVerifier *oidc.IDTokenVerifier
 	// onSubClient is called with a guest once it logged in on a Listener connection.
 	onSubClient func(guest *Conn)
 	// dialer is true for connections obtained using a Dialer. dialAddress and legacyAuth are the address

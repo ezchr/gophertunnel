@@ -140,6 +140,10 @@ type ListenConfig struct {
 	// its main player and is closed when that player's Conn closes. If false (by default), the packets of
 	// guests are returned by the main player's Conn as before.
 	AllowSubClients bool
+	// VerifySubClients verifies the Xbox Live login of guests even when AuthenticationDisabled is set,
+	// for servers behind a proxy that checks the main player but passes guests through. A guest with a
+	// valid token keeps its XUID; others join without one (or are refused if authentication is on).
+	VerifySubClients bool
 
 	// Allow filters what connections are allowed to connect to the Server. The
 	// address, identity data, and client data of the connection are passed. If
@@ -170,6 +174,8 @@ type Listener struct {
 	// for authenticating incoming connections. It will be nil if authentication is
 	// disabled on ListenConfig.
 	verifier *oidc.IDTokenVerifier
+	// subClientVerifier is the verifier for guests with ListenConfig.VerifySubClients.
+	subClientVerifier *oidc.IDTokenVerifier
 }
 
 // ListenerGroup shares the active player count between listeners serving one logical server.
@@ -260,6 +266,19 @@ func (cfg ListenConfig) ListenNetwork(network Network, address string) (*Listene
 		}
 	}
 
+	var subClientVerifier *oidc.IDTokenVerifier
+	if cfg.AllowSubClients && cfg.VerifySubClients && verifier == nil {
+		ctx := context.Background()
+		if cfg.HTTPClient != nil {
+			ctx = context.WithValue(ctx, oauth2.HTTPClient, cfg.HTTPClient)
+		}
+		var err error
+		if subClientVerifier, err = oidcVerifier(ctx); err != nil {
+			// Guests then join without an XUID, as with VerifySubClients off.
+			cfg.ErrorLog.Error("create OIDC verifier for sub-clients: " + err.Error())
+		}
+	}
+
 	netListener, err := network.Listen(address)
 	if err != nil {
 		return nil, err
@@ -277,6 +296,8 @@ func (cfg ListenConfig) ListenNetwork(network Network, address string) (*Listene
 		close:    make(chan struct{}),
 		key:      key,
 		verifier: verifier,
+
+		subClientVerifier: subClientVerifier,
 	}
 
 	// Actually start listening.
@@ -493,6 +514,7 @@ func (listener *Listener) createConn(netConn net.Conn) {
 	if listener.cfg.AllowSubClients {
 		conn.subClientsEnabled.Store(true)
 		conn.onSubClient = listener.acceptSubClient
+		conn.subClientVerifier = listener.subClientVerifier
 	}
 
 	if !listener.group.add(listener.cfg.MaximumPlayers) {
