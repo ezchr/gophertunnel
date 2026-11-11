@@ -43,8 +43,13 @@ const (
 	tcpNoEncryption  byte = 1 << 1
 	tcpNoCompression byte = 1 << 2
 
-	// tcpMaxFrame is the largest frame accepted. Batches are compressed and well below this.
-	tcpMaxFrame = 64 << 20
+	// tcpMaxFrame is the largest frame accepted: a batch the decoder accepts (packet.DefaultMaxDecompressedLen,
+	// sent uncompressed) plus its header, compression byte and checksum.
+	tcpMaxFrame = 16<<20 + 64
+
+	// tcpWriteTimeout is how long a frame write may block on a peer that stopped reading before it fails,
+	// which ends the connection instead of blocking the writer (and anything waiting on it) forever.
+	tcpWriteTimeout = 10 * time.Second
 )
 
 // DialContext ...
@@ -222,6 +227,7 @@ func (c *tcpConn) Write(b []byte) (int, error) {
 	defer c.wmu.Unlock()
 	c.wbuf = binary.BigEndian.AppendUint32(c.wbuf[:0], uint32(len(b)))
 	c.wbuf = append(c.wbuf, b...)
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
 	if _, err := c.Conn.Write(c.wbuf); err != nil {
 		return 0, err
 	}

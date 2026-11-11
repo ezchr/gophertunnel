@@ -583,7 +583,9 @@ func (conn *Conn) Flush() error {
 		// On RakNet this never happens while the connection is open, but a stream transport (TCP)
 		// fails a write when the other side is gone (broken pipe, connection reset): that ends this
 		// connection, it must not take the whole program down.
-		// Close calls Flush, which takes encMu held here: close from another goroutine.
+		// Close calls Flush, which takes encMu held here: close from another goroutine. Cancel first so
+		// that Close does not try to write to the failed connection again.
+		conn.cancelFunc(err)
 		go func() { _ = conn.Close() }()
 		return fmt.Errorf("error encoding packet batch: %w", err)
 	}
@@ -1715,7 +1717,15 @@ func (conn *Conn) closeTransport(cause error) {
 func (conn *Conn) close(cause error) error {
 	var err error
 	conn.once.Do(func() {
-		err = conn.Flush()
+		if conn.encMu.TryLock() {
+			conn.encMu.Unlock()
+			err = conn.Flush()
+		} else if conn.cancelFunc != nil {
+			// A write is in progress, most likely stuck on a peer that stopped reading (a stream such as
+			// TCP blocks then). Waiting for it would hang Close: cancel and close the transport so that the
+			// stuck write returns, without sending what is still pending.
+			conn.cancelFunc(cause)
+		}
 		if conn.cancelFunc != nil {
 			conn.cancelFunc(cause)
 		}
