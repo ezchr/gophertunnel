@@ -703,7 +703,7 @@ func (conn *Conn) receive(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if pkData.h.SenderSubClient != 0 && conn.subClientsEnabled.Load() {
+	if conn.incomingSubClient(pkData.h) != 0 && conn.subClientsEnabled.Load() {
 		return conn.receiveSubClient(pkData)
 	}
 	return conn.receivePacket(pkData)

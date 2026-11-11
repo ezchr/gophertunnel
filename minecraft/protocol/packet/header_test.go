@@ -14,7 +14,7 @@ func TestHeaderSubClientBits(t *testing.T) {
 	}{
 		{Header{PacketID: IDText}, IDText},
 		{Header{PacketID: IDText, SenderSubClient: 1}, IDText | 1<<10},
-		{Header{PacketID: IDSubClientLogin, SenderSubClient: 3}, IDSubClientLogin | 3<<10},
+		{Header{PacketID: IDSubClientLogin, TargetSubClient: 3}, IDSubClientLogin | 3<<12},
 		{Header{PacketID: 0x3FF, SenderSubClient: 2, TargetSubClient: 1}, 0x3FF | 2<<10 | 1<<12},
 	} {
 		var buf bytes.Buffer
@@ -35,8 +35,12 @@ func TestHeaderSubClientBits(t *testing.T) {
 		if got != tc.h {
 			t.Fatalf("read %+v, want %+v", got, tc.h)
 		}
-		if got.SubClient() != tc.h.SenderSubClient {
-			t.Fatalf("SubClient() = %v, want %v", got.SubClient(), tc.h.SenderSubClient)
+		want := tc.h.TargetSubClient
+		if want == 0 {
+			want = tc.h.SenderSubClient
+		}
+		if got.SubClient() != want {
+			t.Fatalf("SubClient() = %v, want %v", got.SubClient(), want)
 		}
 	}
 }

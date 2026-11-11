@@ -133,7 +133,7 @@ func TestSubClientEndToEnd(t *testing.T) {
 
 	// A packet of a sub-client that did not log in must not reach the host.
 	var raw bytes.Buffer
-	_ = (&packet.Header{PacketID: packet.IDText, SenderSubClient: 3}).Write(&raw)
+	_ = (&packet.Header{PacketID: packet.IDText, TargetSubClient: 3}).Write(&raw)
 	(&packet.Text{TextType: packet.TextTypeRaw, Message: "stray"}).Marshal(client.proto.NewWriter(&raw, 0))
 	_, _ = client.Write(raw.Bytes())
 
@@ -224,7 +224,7 @@ func TestSubClientPacketsWithoutOptIn(t *testing.T) {
 		t.Fatal("accept timed out")
 	}
 	var raw bytes.Buffer
-	_ = (&packet.Header{PacketID: packet.IDText, SenderSubClient: 2}).Write(&raw)
+	_ = (&packet.Header{PacketID: packet.IDText, TargetSubClient: 2}).Write(&raw)
 	(&packet.Text{TextType: packet.TextTypeRaw, Message: "guest packet"}).Marshal(client.proto.NewWriter(&raw, 0))
 	_, _ = client.Write(raw.Bytes())
 	_ = client.Flush()

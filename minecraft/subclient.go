@@ -16,9 +16,10 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/text"
 )
 
-// Split-screen players (sub-clients) share the connection of the main client. Each packet header carries
-// the sub-client it belongs to in bits 10-11 (packet.Header.SenderSubClient): 0 for the main client, 1-3
-// for guests. A guest joins with a SubClientLogin, which the server answers with PlayStatus(LoginSuccess)
+// Split-screen players (sub-clients) share the connection of the main client. A client packet of a guest
+// carries the guest's ID in bits 12-13 of its header (packet.Header.TargetSubClient), and a server packet
+// for a guest carries it in bits 10-11 (packet.Header.SenderSubClient), as the vanilla game writes them.
+// 0 is the main client, 1-3 are guests. A guest joins with a SubClientLogin, which the server answers with PlayStatus(LoginSuccess)
 // and then the StartGame sequence. There is no network settings, handshake or resource pack step for a
 // guest: it uses the compression, encryption and packs of the main connection.
 //
@@ -137,7 +138,7 @@ func (conn *Conn) newSubClient(id byte) *Conn {
 		packets:    make(chan *packetData, 8),
 		additional: make(chan packet.Packet, 16),
 		spawn:      make(chan struct{}),
-		hdr:        &packet.Header{SenderSubClient: id},
+		hdr:        subClientHeader(conn.dialer, id),
 
 		resourcePackDelivery: conn.resourcePackDelivery,
 	}
@@ -168,7 +169,7 @@ func (conn *Conn) removeSubClient(guest *Conn) {
 // receiveSubClient handles a packet of the main connection that belongs to a guest. Packets for a guest
 // that does not exist are dropped, except for a SubClientLogin on a Listener connection.
 func (conn *Conn) receiveSubClient(pkData *packetData) error {
-	id := pkData.h.SenderSubClient
+	id := conn.incomingSubClient(pkData.h)
 	conn.subMu.Lock()
 	guest, ok := conn.subClients[id]
 	conn.subMu.Unlock()
@@ -264,6 +265,24 @@ func (conn *Conn) closeSubClient(cause error) error {
 		conn.parent.removeSubClient(conn)
 	})
 	return err
+}
+
+// subClientHeader returns the header a guest writes its packets with: a client writes its ID in bits
+// 12-13, a server writes the ID of the guest it sends to in bits 10-11.
+func subClientHeader(client bool, id byte) *packet.Header {
+	if client {
+		return &packet.Header{TargetSubClient: id}
+	}
+	return &packet.Header{SenderSubClient: id}
+}
+
+// incomingSubClient returns the guest an incoming packet belongs to. A server reads the sending guest
+// from bits 12-13, or bits 10-11 if those are 0; a client reads the addressed guest from bits 10-11.
+func (conn *Conn) incomingSubClient(h *packet.Header) byte {
+	if conn.dialer {
+		return h.SenderSubClient
+	}
+	return h.SubClient()
 }
 
 // subClientNetConn is the net.Conn of a guest. It reports the addresses and latency of the main
