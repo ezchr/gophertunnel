@@ -580,8 +580,12 @@ func (conn *Conn) Flush() error {
 	conn.sendMu.Unlock()
 
 	if err := conn.enc.Encode(toSend); err != nil && !errors.Is(err, net.ErrClosed) && conn.ctx.Err() == nil {
-		// Should never happen while the connection is open.
-		panic(fmt.Errorf("error encoding packet batch: %w", err))
+		// On RakNet this never happens while the connection is open, but a stream transport (TCP)
+		// fails a write when the other side is gone (broken pipe, connection reset): that ends this
+		// connection, it must not take the whole program down.
+		// Close calls Flush, which takes encMu held here: close from another goroutine.
+		go func() { _ = conn.Close() }()
+		return fmt.Errorf("error encoding packet batch: %w", err)
 	}
 
 	// Clear out toSend so that re-using the slice after resetting its length to 0 doesn't keep references
