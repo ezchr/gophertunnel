@@ -144,6 +144,10 @@ type ListenConfig struct {
 	// for servers behind a proxy that checks the main player but passes guests through. A guest with a
 	// valid token keeps its XUID; others join without one (or are refused if authentication is on).
 	VerifySubClients bool
+	// SubClientIdentity gives a split-screen guest without an Xbox account of its own its identity. A
+	// console logs such a guest in with the main player's token, so the guest is let in as the main
+	// player's guest under the identity returned. If nil, DefaultSubClientIdentity is used.
+	SubClientIdentity func(host login.IdentityData, sub byte, clientData login.ClientData) login.IdentityData
 
 	// Allow filters what connections are allowed to connect to the Server. The
 	// address, identity data, and client data of the connection are passed. If
@@ -515,6 +519,7 @@ func (listener *Listener) createConn(netConn net.Conn) {
 		conn.subClientsEnabled.Store(true)
 		conn.onSubClient = listener.acceptSubClient
 		conn.subClientVerifier = listener.subClientVerifier
+		conn.subClientIdentity = listener.cfg.SubClientIdentity
 	}
 
 	if !listener.group.add(listener.cfg.MaximumPlayers) {

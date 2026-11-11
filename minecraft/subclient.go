@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 	"github.com/sandertv/gophertunnel/minecraft/text"
@@ -73,7 +75,11 @@ func (conn *Conn) LoginSubClient(ctx context.Context, identityData login.Identit
 	clearXBLIdentityData(&identityData)
 	defaultClientData(conn.dialAddress, identityData.DisplayName, &clientData)
 	request := login.EncodeOffline(identityData, clientData, key, conn.legacyAuth)
+	return conn.loginSubClient(ctx, request, identityData, clientData)
+}
 
+// loginSubClient logs a guest in with the login request passed.
+func (conn *Conn) loginSubClient(ctx context.Context, request []byte, identityData login.IdentityData, clientData login.ClientData) (*Conn, error) {
 	conn.subMu.Lock()
 	var id byte
 	for i := byte(1); i <= maxSubClients; i++ {
@@ -210,16 +216,28 @@ func (conn *Conn) handleSubClientLogin(id byte, pkData *packetData) {
 	if verifier == nil {
 		verifier = conn.subClientVerifier
 	}
-	identityData, clientData, authResult, err := login.Parse(pk.ConnectionRequest, verifier)
+	identityData, clientData, authResult, err := login.ParseSubClient(pk.ConnectionRequest, verifier, conn.clientData)
 	if err != nil {
 		reject(fmt.Errorf("parse login request: %w", err), &packet.Disconnect{Reason: packet.DisconnectReasonNotAuthenticated})
 		return
 	}
-	if !authResult.XBOXLiveAuthenticated && conn.authEnabled {
+	if authResult.Guest {
+		// A guest without an account of its own: the console signs its login with the main player's
+		// token. It plays as an identity derived from the main player's.
+		if host := conn.identityData; identityData.XUID != host.XUID || (conn.authEnabled && !authResult.XBOXLiveAuthenticated) {
+			reject(errors.New("guest login not signed by the main player"), &packet.Disconnect{Reason: packet.DisconnectReasonNotAuthenticated})
+			return
+		}
+		derive := conn.subClientIdentity
+		if derive == nil {
+			derive = DefaultSubClientIdentity
+		}
+		identityData = derive(conn.identityData, id, clientData)
+	} else if !authResult.XBOXLiveAuthenticated && conn.authEnabled {
 		reject(errors.New("sub-client was not authenticated to XBOX Live"), &packet.Disconnect{Message: text.Colourf("<red>You must be logged in with XBOX Live to join.</red>")})
 		return
 	}
-	if !authResult.XBOXLiveAuthenticated {
+	if !authResult.XBOXLiveAuthenticated && !authResult.Guest {
 		// Without authentication the XUID cannot be trusted.
 		identityData.XUID = ""
 	}
@@ -248,6 +266,21 @@ func (conn *Conn) handleSubClientLogin(id byte, pkData *packetData) {
 	_ = guest.Flush()
 	if conn.onSubClient != nil {
 		conn.onSubClient(guest)
+	}
+}
+
+// DefaultSubClientIdentity is the identity of a split-screen guest without an account of its own when
+// ListenConfig.SubClientIdentity is nil: no XUID, a UUID derived from the main player's and the guest's
+// sub-client ID, and the main player's name followed by the ID ("Steve_1").
+func DefaultSubClientIdentity(host login.IdentityData, sub byte, _ login.ClientData) login.IdentityData {
+	name := host.DisplayName
+	if len(name) > 13 {
+		name = name[:13]
+	}
+	return login.IdentityData{
+		Identity:    uuid.NewSHA1(uuid.NameSpaceOID, []byte(host.Identity+":subclient:"+strconv.Itoa(int(sub)))).String(),
+		DisplayName: name + "_" + strconv.Itoa(int(sub)),
+		TitleID:     host.TitleID,
 	}
 }
 

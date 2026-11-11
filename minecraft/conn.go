@@ -216,6 +216,8 @@ type Conn struct {
 	// subClientVerifier verifies the Xbox Live token of guests when verifier is nil (authentication
 	// disabled), so that a guest with a valid token keeps its XUID.
 	subClientVerifier *oidc.IDTokenVerifier
+	// subClientIdentity gives a guest without an account of its own its identity (ListenConfig).
+	subClientIdentity func(host login.IdentityData, sub byte, clientData login.ClientData) login.IdentityData
 	// onSubClient is called with a guest once it logged in on a Listener connection.
 	onSubClient func(guest *Conn)
 	// dialer is true for connections obtained using a Dialer. dialAddress and legacyAuth are the address

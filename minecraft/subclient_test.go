@@ -3,6 +3,11 @@ package minecraft
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -259,5 +264,83 @@ func TestSubClientWithHostIdentityRejected(t *testing.T) {
 	_ = client.Flush()
 	if client.Context().Err() != nil {
 		t.Fatal("host closed")
+	}
+}
+
+// guestLoginRequest makes a guest login (AuthenticationType 1) signed like the main player's offline
+// login, as a console sends for a split-screen guest without an account of its own.
+func guestLoginRequest(t *testing.T, host login.IdentityData, cd login.ClientData) []byte {
+	key, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	defaultClientData("example.com:19132", host.DisplayName, &cd)
+	cd.GameVersion, cd.ServerAddress, cd.LanguageCode, cd.PlayFabID, cd.DeviceModel = "", "", "", "", ""
+	req := login.EncodeOffline(host, cd, key, false)
+	n := binary.LittleEndian.Uint32(req)
+	var m map[string]any
+	if err := json.Unmarshal(req[4:4+n], &m); err != nil {
+		t.Fatal(err)
+	}
+	m["AuthenticationType"] = 1
+	delete(m, "Certificate")
+	chain, _ := json.Marshal(m)
+	var out bytes.Buffer
+	_ = binary.Write(&out, binary.LittleEndian, int32(len(chain)))
+	out.Write(chain)
+	out.Write(req[4+n:])
+	return out.Bytes()
+}
+
+func TestSubClientGuestLogin(t *testing.T) {
+	l, err := ListenConfig{AuthenticationDisabled: true, AllowSubClients: true}.Listen("raknet", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	acc := make(chan *Conn, 2)
+	go func() {
+		for rid := uint64(1); rid <= 2; rid++ {
+			c, err := acceptAndSpawn(l, rid)
+			if err != nil {
+				return
+			}
+			acc <- c
+		}
+	}()
+	client, err := Dialer{IdentityData: login.IdentityData{DisplayName: "Host"}}.DialTimeout("raknet", l.Addr().String(), 15*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	server := <-acc
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Signed with the host's identity: the guest gets one derived from it.
+	guest, err := client.loginSubClient(ctx, guestLoginRequest(t, client.IdentityData(), login.ClientData{}), client.IdentityData(), login.ClientData{})
+	if err != nil {
+		t.Fatalf("guest login: %v", err)
+	}
+	var sg *Conn
+	select {
+	case sg = <-acc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("guest not accepted")
+	}
+	want := DefaultSubClientIdentity(server.IdentityData(), 1, login.ClientData{})
+	if got := sg.IdentityData(); got.Identity != want.Identity || got.DisplayName != "Host_1" || got.XUID != "" {
+		t.Fatalf("guest identity %+v, want %+v", got, want)
+	}
+	if sg.ClientData().GameVersion == "" {
+		t.Fatal("guest game version not taken from the host")
+	}
+	sendText(t, guest, "guest here")
+	if msg, err := readText(sg, 5*time.Second); err != nil || msg != "guest here" {
+		t.Fatalf("guest read %q, %v", msg, err)
+	}
+
+	// A guest login signed for another account than the host's is refused.
+	other := client.IdentityData()
+	other.XUID = "2535400000000001"
+	if _, err := client.loginSubClient(ctx, guestLoginRequest(t, other, login.ClientData{}), other, login.ClientData{}); err == nil {
+		t.Fatal("guest login of another account accepted")
 	}
 }
