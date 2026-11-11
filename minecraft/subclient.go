@@ -205,7 +205,11 @@ func (conn *Conn) handleSubClientLogin(id byte, pkData *packetData) {
 		_ = guest.close(err)
 	}
 
-	identityData, clientData, authResult, err := login.Parse(pk.ConnectionRequest, conn.verifier)
+	verifier := conn.verifier
+	if verifier == nil {
+		verifier = conn.subClientVerifier
+	}
+	identityData, clientData, authResult, err := login.Parse(pk.ConnectionRequest, verifier)
 	if err != nil {
 		reject(fmt.Errorf("parse login request: %w", err), &packet.Disconnect{Reason: packet.DisconnectReasonNotAuthenticated})
 		return
