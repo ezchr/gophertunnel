@@ -19,11 +19,24 @@ type Packet interface {
 }
 
 // Header is the header of a packet. It exists out of a single varuint32 which is composed of a packet ID and
-// a sender and target sub client ID. These IDs are used for split screen functionality.
+// two sub-client IDs. These IDs are used for split screen functionality.
 type Header struct {
-	PacketID        uint32
+	// PacketID is the ID of the packet, held in bits 0-9.
+	PacketID uint32
+	// SenderSubClient holds bits 10-11. Despite its name, it is the split-screen sub-client the packet
+	// belongs to in both directions: the sub-client that sent it (client to server) or the sub-client it
+	// is addressed to (server to client). 0 is the main client, 1-3 are split-screen guests. SubClient
+	// returns the same value.
 	SenderSubClient byte
+	// TargetSubClient holds bits 12-13. The vanilla game leaves it at 0 for all packets. It is kept for
+	// compatibility and should normally not be set.
 	TargetSubClient byte
+}
+
+// SubClient returns the split-screen sub-client the packet belongs to: the sub-client that sent it, or
+// the one it is addressed to. It reads bits 10-11 of the header (SenderSubClient).
+func (header *Header) SubClient() byte {
+	return header.SenderSubClient
 }
 
 // Write writes the header as a single varuint32 to buf.
