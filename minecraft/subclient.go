@@ -218,6 +218,11 @@ func (conn *Conn) handleSubClientLogin(id byte, pkData *packetData) {
 		// Without authentication the XUID cannot be trusted.
 		identityData.XUID = ""
 	}
+	if identityData.Identity == conn.identityData.Identity || (identityData.XUID != "" && identityData.XUID == conn.identityData.XUID) {
+		// A guest with the main player's identity would replace the main player on most servers.
+		reject(errors.New("sub-client has the identity of the main player"), &packet.Disconnect{Reason: packet.DisconnectReasonLoggedInOtherLocation, Message: "This account is already playing on this console."})
+		return
+	}
 	guest.identityData, guest.clientData = identityData, clientData
 	if conn.allow != nil {
 		if reason, ok := conn.allow(conn.RemoteAddr(), identityData, clientData); !ok {

@@ -235,3 +235,29 @@ func TestSubClientPacketsWithoutOptIn(t *testing.T) {
 		t.Fatal("LoginSubClient on a Listener conn succeeded")
 	}
 }
+
+func TestSubClientWithHostIdentityRejected(t *testing.T) {
+	l, err := ListenConfig{AuthenticationDisabled: true, AllowSubClients: true}.Listen("raknet", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	go func() { _, _ = acceptAndSpawn(l, 1) }()
+	client, err := Dialer{}.DialTimeout("raknet", l.Addr().String(), 15*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = client.LoginSubClient(ctx, login.IdentityData{Identity: client.IdentityData().Identity, DisplayName: "Copy"}, login.ClientData{})
+	var d DisconnectError
+	if !errors.As(err, &d) {
+		t.Fatalf("guest with the host's identity: got %v, want a disconnect", err)
+	}
+	sendText(t, client, "host fine")
+	_ = client.Flush()
+	if client.Context().Err() != nil {
+		t.Fatal("host closed")
+	}
+}
