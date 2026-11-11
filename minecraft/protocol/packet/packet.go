@@ -23,19 +23,23 @@ type Packet interface {
 type Header struct {
 	// PacketID is the ID of the packet, held in bits 0-9.
 	PacketID uint32
-	// SenderSubClient holds bits 10-11. Despite its name, it is the split-screen sub-client the packet
-	// belongs to in both directions: the sub-client that sent it (client to server) or the sub-client it
-	// is addressed to (server to client). 0 is the main client, 1-3 are split-screen guests. SubClient
-	// returns the same value.
+	// SenderSubClient holds bits 10-11. Despite its name, the game writes the sub-client the packet is
+	// addressed to here: a server packet for a split-screen guest carries the guest's ID, and a client
+	// packet carries 0 (the server).
 	SenderSubClient byte
-	// TargetSubClient holds bits 12-13. The vanilla game leaves it at 0 for all packets. It is kept for
-	// compatibility and should normally not be set.
+	// TargetSubClient holds bits 12-13. Despite its name, the game writes the sub-client that sent the
+	// packet here: a client packet of a split-screen guest, such as its SubClientLogin, carries the
+	// guest's ID, and a server packet normally carries 0.
 	TargetSubClient byte
 }
 
-// SubClient returns the split-screen sub-client the packet belongs to: the sub-client that sent it, or
-// the one it is addressed to. It reads bits 10-11 of the header (SenderSubClient).
+// SubClient returns the split-screen sub-client a packet belongs to: the guest that sent it (bits 12-13,
+// client packets) or, if that is 0, the guest it is addressed to (bits 10-11, server packets). 0 is the
+// main client, 1-3 are guests.
 func (header *Header) SubClient() byte {
+	if header.TargetSubClient != 0 {
+		return header.TargetSubClient
+	}
 	return header.SenderSubClient
 }
 
