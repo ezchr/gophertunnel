@@ -391,8 +391,12 @@ func (d *Decoder) unmarshalTag(val reflect.Value, t tagType, tagName string) err
 			if length < 0 {
 				return BufferOverrunError{Op: "Slice"}
 			}
-			v := reflect.MakeSlice(sliceType, int(length), int(length))
+			if err = d.checkRemaining(int(length), "Slice"); err != nil {
+				return err
+			}
+			v := reflect.MakeSlice(sliceType, 0, min(int(length), maxPrealloc))
 			for i := 0; i < int(length); i++ {
+				v = reflect.Append(v, reflect.Zero(sliceType.Elem()))
 				if err := d.unmarshalTag(v.Index(i), listType, ""); err != nil {
 					// An error occurred during the decoding of one of the elements of the TAG_List, meaning it
 					// either had an invalid type or the NBT was invalid.
@@ -544,6 +548,10 @@ func (d *Decoder) tag() (t tagType, tagName string, err error) {
 	}
 	return t, tagName, err
 }
+
+// maxPrealloc is the most elements a list or array is allocated for up front; longer ones grow as
+// their elements are read, so a declared length alone never costs more than this.
+const maxPrealloc = 4096
 
 func (d *Decoder) checkRemaining(length int, op string) error {
 	if remaining, ok := d.r.Reader.(interface{ Len() int }); ok && length > remaining.Len() {
