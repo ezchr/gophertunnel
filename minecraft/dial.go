@@ -473,12 +473,13 @@ func serverAddress(address string) string {
 
 // loginServerAddress is the ServerAddress a client sends when it dials address over network. A world
 // joined over NetherNet from the Friends tab or an invite is dialed by its host's NetherNet or messaging
-// ID, which is not an address: the game sends an empty ServerAddress for it, and servers that validate
-// the login (net.ResolveUDPAddr) refuse the ID. An address with a scheme, such as the https:// address
+// ID, which is not an address: the game sends ":0" for it (measured with 1.26.60 clients joining from
+// the Friends tab and from an invite), and servers that validate the login (net.ResolveUDPAddr)
+// refuse the ID. An address with a scheme, such as the https:// address
 // of a NetherNet server, is sent as it is, and so is every address on other networks.
 func loginServerAddress(network Network, address string) string {
 	if _, ok := network.(NetherNet); ok && !strings.Contains(address, "://") {
-		return ""
+		return ":0"
 	}
 	return address
 }
