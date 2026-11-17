@@ -337,7 +337,7 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	if clientLogin && conn.clientData.PlayFabID == "" {
 		conn.clientData.PlayFabID = strings.ToLower(conn.identityData.PlayFabID)
 	}
-	defaultClientData(address, conn.identityData.DisplayName, &conn.clientData)
+	defaultClientData(loginServerAddress(network, address), conn.identityData.DisplayName, &conn.clientData)
 	if clientLogin && serverAddr != "" {
 		conn.clientData.ServerAddress = serverAddr
 	}
@@ -504,6 +504,18 @@ func serverAddress(address string) string {
 		return address
 	}
 	return address + ":" + u.Port()
+}
+
+// loginServerAddress is the ServerAddress a client sends when it dials address over network. A world
+// joined over NetherNet from the Friends tab or an invite is dialed by its host's NetherNet or messaging
+// ID, which is not an address: the game sends an empty ServerAddress for it, and servers that validate
+// the login (net.ResolveUDPAddr) refuse the ID. An address with a scheme, such as the https:// address
+// of a NetherNet server, is sent as it is, and so is every address on other networks.
+func loginServerAddress(network Network, address string) string {
+	if _, ok := network.(NetherNet); ok && !strings.Contains(address, "://") {
+		return ""
+	}
+	return address
 }
 
 // defaultClientData edits the ClientData passed to have defaults set to all fields that were left unchanged.
