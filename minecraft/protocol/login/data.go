@@ -100,6 +100,10 @@ func (data IdentityData) Validate() error {
 	return nil
 }
 
+// CinnabarFriendTargetPrefix starts the ServerAddress the Cinnabar client sends when it joins a
+// friend's world from the Friends tab: "friend_xuid/<host XUID>". The game sends ":0" there.
+const CinnabarFriendTargetPrefix = "friend_xuid/"
+
 // ClientData is a container of client specific data of a Login packet. It holds data such as the skin of a
 // player, but also its language code and device information.
 type ClientData struct {
@@ -376,6 +380,11 @@ func (data ClientData) Validate() error {
 		if _, _, err := net.SplitHostPort(u.Host); err != nil || u.Hostname() == "" ||
 			(u.Scheme != "https" && u.Scheme != "http") {
 			return fmt.Errorf("ServerAddress is invalid: %v", data.ServerAddress)
+		}
+	} else if strings.HasPrefix(data.ServerAddress, CinnabarFriendTargetPrefix) {
+		// Cinnabar joins a Friends-tab world with its own target name as the ServerAddress.
+		if _, err := strconv.ParseUint(strings.TrimPrefix(data.ServerAddress, CinnabarFriendTargetPrefix), 10, 64); err != nil {
+			return fmt.Errorf("ServerAddress %v must name a friend by XUID", data.ServerAddress)
 		}
 	} else if _, err := net.ResolveUDPAddr("udp", data.ServerAddress); err != nil {
 		return fmt.Errorf("ServerAddress must be resolveable as a UDP address, but got %v", data.ServerAddress)
