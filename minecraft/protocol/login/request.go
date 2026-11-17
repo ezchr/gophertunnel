@@ -79,6 +79,9 @@ var mojangKey = new(ecdsa.PublicKey)
 type AuthResult struct {
 	PublicKey             *ecdsa.PublicKey
 	XBOXLiveAuthenticated bool
+	// Guest is set for a split-screen guest's login (AuthenticationType 1), read by ParseSubClient. A
+	// console signs it with the main player's token, so its identity is the main player's.
+	Guest bool
 }
 
 // Parse parses and verifies the login request passed. The AuthResult returned holds the ecdsa.PublicKey that
@@ -89,6 +92,19 @@ type AuthResult struct {
 // freely by the client.
 // The verifier will be used for parsing the OpenID token included in the first chain of the login request.
 func Parse(request []byte, verifier *oidc.IDTokenVerifier) (IdentityData, ClientData, AuthResult, error) {
+	return parse(request, verifier, nil)
+}
+
+// ParseSubClient parses and verifies the login request of a SubClientLogin like Parse. It also accepts
+// guest logins (AuthenticationType 1), which a console sends for a split-screen guest with the main
+// player's token, and reports them in AuthResult.Guest. Client data fields a guest leaves out (game
+// version, server address, language, device model, PlayFab ID) are taken from host, the main player's.
+func ParseSubClient(request []byte, verifier *oidc.IDTokenVerifier, host ClientData) (IdentityData, ClientData, AuthResult, error) {
+	return parse(request, verifier, &host)
+}
+
+// parse parses a login request. host is the main player's client data for a sub-client, or nil.
+func parse(request []byte, verifier *oidc.IDTokenVerifier, host *ClientData) (IdentityData, ClientData, AuthResult, error) {
 	var (
 		iData IdentityData
 		cData ClientData
@@ -98,6 +114,10 @@ func Parse(request []byte, verifier *oidc.IDTokenVerifier) (IdentityData, Client
 	req, err := parseLoginRequest(request)
 	if err != nil {
 		return iData, cData, res, fmt.Errorf("parse login request: %w", err)
+	}
+	guest := req.AuthenticationType == 1
+	if guest && host == nil {
+		return iData, cData, res, fmt.Errorf("parse login request: guest authentication is only valid for a sub-client")
 	}
 
 	var (
@@ -165,6 +185,9 @@ func Parse(request []byte, verifier *oidc.IDTokenVerifier) (IdentityData, Client
 	if err := parseFullClaim(req.RawToken, key, &cData); err != nil {
 		return iData, cData, res, fmt.Errorf("parse client data: %w", err)
 	}
+	if host != nil {
+		fillSubClientData(&cData, *host)
+	}
 	if !strings.Contains(cData.ServerAddress, "://") && strings.Count(cData.ServerAddress, ":") > 1 && cData.ServerAddress[0] != '[' {
 		// IPv6: We can't net.ResolveUDPAddr this directly, because Mojang does
 		// not always put [] around the IP if it isn't added by the player in
@@ -175,7 +198,26 @@ func Parse(request []byte, verifier *oidc.IDTokenVerifier) (IdentityData, Client
 	if err := cData.Validate(); err != nil {
 		return iData, cData, res, fmt.Errorf("validate client data: %w", err)
 	}
-	return iData, cData, AuthResult{PublicKey: key, XBOXLiveAuthenticated: authenticated}, nil
+	return iData, cData, AuthResult{PublicKey: key, XBOXLiveAuthenticated: authenticated, Guest: guest}, nil
+}
+
+// fillSubClientData sets the client data fields a split-screen guest leaves out to the main player's.
+func fillSubClientData(d *ClientData, host ClientData) {
+	if d.GameVersion == "" {
+		d.GameVersion = host.GameVersion
+	}
+	if d.ServerAddress == "" {
+		d.ServerAddress = host.ServerAddress
+	}
+	if d.LanguageCode == "" {
+		d.LanguageCode = host.LanguageCode
+	}
+	if d.DeviceModel == "" {
+		d.DeviceModel = host.DeviceModel
+	}
+	if d.PlayFabID == "" {
+		d.PlayFabID = host.PlayFabID
+	}
 }
 
 // parseLegacyChain verifies the legacy Mojang chain and returns IdentityData from extraData,
@@ -273,9 +315,10 @@ func parseLoginRequest(requestData []byte) (*request, error) {
 		r.request.Certificate.Chain = r.Chain
 	}
 
-	// Then check if the authentication type is guest mode.
-	if r.AuthenticationType == 1 {
-		return nil, fmt.Errorf("guest authentication is not supported")
+	// Guest mode (AuthenticationType 1) is what a console sends for a split-screen guest, with the main
+	// player's OIDC token. Without a token it cannot be read. Parse refuses it, ParseSubClient takes it.
+	if r.AuthenticationType == 1 && r.Token == "" {
+		return nil, fmt.Errorf("guest authentication without a token is not supported")
 	}
 
 	var rawLength int32
