@@ -169,6 +169,8 @@ type Conn struct {
 	// texturePacksRequired specifies if clients that join must accept the texture pack in order for them to
 	// be able to join the server. If they don't accept, they can only leave the server.
 	texturePacksRequired bool
+	// disableEducationPacks prevents built-in Education Edition packs from being appended to the resource pack stack.
+	disableEducationPacks bool
 	// forceDisableVibrantVisuals specifies whether the connection is forced to have vibrant visuals disabled.
 	forceDisableVibrantVisuals bool
 	packQueue                  *resourcePackQueue
@@ -1104,7 +1106,7 @@ func (conn *Conn) handleResourcePacksInfo(pk *packet.ResourcePacksInfo) error {
 		packsToDownload = append(packsToDownload, id+"_"+pack.Version)
 		conn.packQueue.downloadingPacks[id] = downloadingPack{
 			size:       pack.Size,
-			buf:        bytes.NewBuffer(make([]byte, 0, pack.Size)),
+			buf:        new(bytes.Buffer), // Payload storage grows only as chunks arrive.
 			newFrag:    make(chan []byte),
 			contentKey: pack.ContentKey,
 			cacheKey:   cacheKey,
@@ -1208,11 +1210,13 @@ func (conn *Conn) handleResourcePackClientResponse(pk *packet.ResourcePackClient
 			resourcePack := protocol.StackResourcePack{UUID: pack.UUID().String(), Version: pack.Version()}
 			pk.TexturePacks = append(pk.TexturePacks, resourcePack)
 		}
-		for _, exempted := range exemptedPacks {
-			pk.TexturePacks = append(pk.TexturePacks, protocol.StackResourcePack{
-				UUID:    exempted.uuid,
-				Version: exempted.version,
-			})
+		if !conn.disableEducationPacks {
+			for _, exempted := range exemptedPacks {
+				pk.TexturePacks = append(pk.TexturePacks, protocol.StackResourcePack{
+					UUID:    exempted.uuid,
+					Version: exempted.version,
+				})
+			}
 		}
 		if err := conn.WritePacket(pk); err != nil {
 			return fmt.Errorf("send ResourcePackStack: %w", err)
@@ -1275,7 +1279,7 @@ func (conn *Conn) startGame() {
 		WorldGameMode:                data.WorldGameMode,
 		Hardcore:                     data.Hardcore,
 		XBLBroadcastMode:             data.XBLBroadcastMode,
-		PlatformBroadcastMode:        data.XBLBroadcastMode,
+		PlatformBroadcastMode:        data.PlatformBroadcastMode,
 		ServerAuthoritativeInventory: data.ServerAuthoritativeInventory,
 		PlayerPermissions:            data.PlayerPermissions,
 		Experiments:                  data.Experiments,
@@ -1507,6 +1511,7 @@ func (conn *Conn) handleStartGame(pk *packet.StartGame) error {
 		WorldGameMode:                pk.WorldGameMode,
 		Hardcore:                     pk.Hardcore,
 		XBLBroadcastMode:             pk.XBLBroadcastMode,
+		PlatformBroadcastMode:        pk.PlatformBroadcastMode,
 		ServerAuthoritativeInventory: pk.ServerAuthoritativeInventory,
 		PlayerPermissions:            pk.PlayerPermissions,
 		ChatRestrictionLevel:         pk.ChatRestrictionLevel,
