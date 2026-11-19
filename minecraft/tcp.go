@@ -204,6 +204,11 @@ type tcpConn struct {
 
 	wmu  sync.Mutex
 	wbuf []byte
+
+	// lastFrame and frames are the size of the last frame read and how many were read, only for the error
+	// of a bad frame header.
+	lastFrame int
+	frames    uint64
 }
 
 func newTCPConn(c net.Conn, flags byte) *tcpConn {
@@ -236,7 +241,17 @@ func (c *tcpConn) Write(b []byte) (int, error) {
 
 // ReadPacket reads one frame.
 func (c *tcpConn) ReadPacket() ([]byte, error) {
-	return readTCPFrame(c.r, nil)
+	f, err := readTCPFrame(c.r, nil)
+	if err != nil {
+		var fe *tcpFrameError
+		if errors.As(err, &fe) {
+			fe.prev, fe.frames = c.lastFrame, c.frames
+		}
+		return nil, err
+	}
+	c.lastFrame = len(f)
+	c.frames++
+	return f, nil
 }
 
 // Read reads one frame into b, as a message based connection does.
@@ -257,6 +272,21 @@ func writeTCPFrame(w io.Writer, b []byte) error {
 	return err
 }
 
+// tcpFrameError is returned for a frame header naming more than tcpMaxFrame bytes. It holds what tells a real
+// oversized frame (the next bytes start a batch: fe, then ff without compression) from a stream that lost
+// its framing (the header is the middle of some other data).
+type tcpFrameError struct {
+	head   [4]byte
+	next   []byte
+	prev   int
+	frames uint64
+}
+
+func (e *tcpFrameError) Error() string {
+	return fmt.Sprintf("tcp: frame too large: header %x = %d bytes (limit %d), next bytes %x, previous frame %d bytes, %d frames read before",
+		e.head[:], binary.BigEndian.Uint32(e.head[:]), tcpMaxFrame, e.next, e.prev, e.frames)
+}
+
 func readTCPFrame(r *bufio.Reader, buf []byte) ([]byte, error) {
 	var head [4]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
@@ -264,7 +294,9 @@ func readTCPFrame(r *bufio.Reader, buf []byte) ([]byte, error) {
 	}
 	n := binary.BigEndian.Uint32(head[:])
 	if n > tcpMaxFrame {
-		return nil, errors.New("tcp: frame too large")
+		// Only what is already buffered, so that building the error never blocks.
+		next, _ := r.Peek(min(16, r.Buffered()))
+		return nil, &tcpFrameError{head: head, next: append([]byte(nil), next...)}
 	}
 	if cap(buf) < int(n) {
 		buf = make([]byte, n)
