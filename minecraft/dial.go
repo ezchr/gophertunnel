@@ -141,6 +141,14 @@ type Dialer struct {
 
 	// DisablePortFollowing, if set to true, dials respect provided port instead of following the pong port.
 	DisablePortFollowing bool
+
+	// ClientLogin, if set to true, logs in the way 1.26.x clients do (zid): the login request carries only
+	// the multiplayer token (AuthenticationType 0, an empty Certificate), not the legacy Mojang chain, which
+	// names the Xbox title of the token's client (Android for auth.AndroidConfig tokens) and which current
+	// clients no longer send. ClientData is sent as set: its DeviceOS, GameVersion and ServerAddress are kept
+	// (no Android data is forced), and an empty PlayFabID becomes the token's PlayFab id (its mid claim, in
+	// lower case, as clients send it). It has no effect on offline logins or with EnableLegacyAuth.
+	ClientLogin bool
 }
 
 // Dial dials a Minecraft connection to the address passed over the network passed. The network is typically
@@ -270,15 +278,23 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 				return nil, &net.OpError{Op: "dial", Net: "minecraft", Err: err}
 			}
 		}
-		chainData, err = auth.RequestMinecraftChain(ctx, d.XBLClient, key)
-		if err != nil {
-			return nil, &net.OpError{Op: "dial", Net: "minecraft", Err: fmt.Errorf("request Minecraft auth chain: %w", err)}
+		if d.ClientLogin && token != "" {
+			identityData, err := login.TokenIdentityData(token)
+			if err != nil {
+				return nil, &net.OpError{Op: "dial", Net: "minecraft", Err: err}
+			}
+			d.IdentityData = identityData
+		} else {
+			chainData, err = auth.RequestMinecraftChain(ctx, d.XBLClient, key)
+			if err != nil {
+				return nil, &net.OpError{Op: "dial", Net: "minecraft", Err: fmt.Errorf("request Minecraft auth chain: %w", err)}
+			}
+			identityData, err := readChainIdentityData([]byte(chainData))
+			if err != nil {
+				return nil, &net.OpError{Op: "dial", Net: "minecraft", Err: err}
+			}
+			d.IdentityData = identityData
 		}
-		identityData, err := readChainIdentityData([]byte(chainData))
-		if err != nil {
-			return nil, &net.OpError{Op: "dial", Net: "minecraft", Err: err}
-		}
-		d.IdentityData = identityData
 	}
 
 	if !d.DisablePortFollowing {
@@ -310,10 +326,22 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 	conn.maxDecompressedLen = d.MaxDecompressedLen
 
 	defaultIdentityData(&conn.identityData)
+	clientLogin := d.ClientLogin && token != "" && chainData == ""
+	serverAddr := conn.clientData.ServerAddress
+	if clientLogin && conn.clientData.PlayFabID == "" {
+		conn.clientData.PlayFabID = strings.ToLower(conn.identityData.PlayFabID)
+	}
 	defaultClientData(address, conn.identityData.DisplayName, &conn.clientData)
+	if clientLogin && serverAddr != "" {
+		conn.clientData.ServerAddress = serverAddr
+	}
 
 	var request []byte
-	if chainData == "" && token == "" {
+	if clientLogin {
+		request = login.EncodeToken(conn.clientData, key, token)
+		identityData, _, _, _ := login.Parse(request, verifier)
+		conn.identityData = identityData
+	} else if chainData == "" && token == "" {
 		// We haven't logged into the user's XBL account. We create a login request with only one token
 		// holding the identity data set in the Dialer after making sure we clear data from the identity data
 		// that is only present when logged in.

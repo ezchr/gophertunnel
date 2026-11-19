@@ -377,6 +377,45 @@ func encodeRequest(req *request) []byte {
 	return buf.Bytes()
 }
 
+// EncodeToken creates a login request the way 1.26.x clients send it (zid): the multiplayer token only
+// (AuthenticationType 0, an empty Certificate, no legacy chain) and the client data, signed with key, whose
+// public key the token's cpk claim must hold.
+func EncodeToken(data ClientData, key *ecdsa.PrivateKey, token string) []byte {
+	signer, _ := jose.NewSigner(jose.SigningKey{Key: key, Algorithm: jose.ES384}, &jose.SignerOptions{
+		ExtraHeaders: map[jose.HeaderKey]any{"x5u": MarshalPublicKey(&key.PublicKey)},
+	})
+	auth, _ := json.Marshal(struct {
+		AuthenticationType uint8  `json:"AuthenticationType"`
+		Certificate        string `json:"Certificate"`
+		Token              string `json:"Token"`
+	}{0, "", token})
+	rawToken, _ := jwt.Signed(signer).Claims(data).Serialize()
+
+	buf := bytes.NewBuffer(nil)
+	_ = binary.Write(buf, binary.LittleEndian, int32(len(auth)))
+	_, _ = buf.Write(auth)
+	_ = binary.Write(buf, binary.LittleEndian, int32(len(rawToken)))
+	_, _ = buf.WriteString(rawToken)
+	return buf.Bytes()
+}
+
+// TokenIdentityData reads the identity in a multiplayer token without verifying its signature (zid): for a
+// client that just received the token, to know who it logs in as.
+func TokenIdentityData(token string) (IdentityData, error) {
+	tok, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES384, jose.RS256})
+	if err != nil {
+		return IdentityData{}, fmt.Errorf("parse multiplayer token: %w", err)
+	}
+	var claims tokenClaims
+	if err := tok.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		return IdentityData{}, fmt.Errorf("parse multiplayer token claims: %w", err)
+	}
+	if claims.XUID == "" {
+		return IdentityData{}, fmt.Errorf("multiplayer token has no XUID")
+	}
+	return claims.identityData(), nil
+}
+
 // EncodeOffline creates a login request using the identity data and client data passed.
 // The private key passed will be used to self-sign the JWTs.
 //
