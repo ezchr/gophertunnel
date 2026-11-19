@@ -28,6 +28,11 @@ type SoundDataUpdate struct {
 
 // Marshal encodes/decodes a SoundDataUpdate.
 func (x *SoundDataUpdate) Marshal(io IO) {
+	// A tagged variant on the wire: the variant index, then the alternative's own type and fields
+	// (upstream PR #549; without the index the client crashed when a sound was stopped).
+	index := uint32(x.Type)
+	io.Varuint32(&index)
+	x.Type = uint8(index)
 	io.Uint8(&x.Type)
 	switch x.Type {
 	case SoundDataUpdateStop, SoundDataUpdatePause, SoundDataUpdateResume:
