@@ -256,16 +256,42 @@ func (x *PersonaPieceTintColour) Marshal(r IO) {
 // personaPieceTintWireType converts the persona_* names used in login data to the shorter names used by the
 // v2168 skin codec. The hands type is singular in login data but plural on the wire.
 func personaPieceTintWireType(pieceType string) string {
-	if pieceType == "persona_hand" {
-		return "hands"
+	if wire, ok := personaPieceTintWireNames[pieceType]; ok {
+		return wire
 	}
 	return strings.TrimPrefix(pieceType, "persona_")
 }
 
+// personaPieceTintWireNames holds the login names whose v2168 wire name is not the login name without
+// "persona_": the client's persona::PieceType names are the enum names in lower case, without the
+// underscores of the login names ("facialhair", not "facial_hair"), except high_pants. A client sent
+// "facial_hair" rejects the whole PlayerList packet (PacketViolationWarning, "This value is bound to
+// 'persona::PieceType'") and disconnects; it took every player of a server off with it (2026-11-19).
+// The names are CloudburstMC Protocol's PersonaPieceType serialize names.
+var personaPieceTintWireNames = map[string]string{
+	"persona_hand":           "hands",
+	"persona_facial_hair":    "facialhair",
+	"persona_face_accessory": "faceaccessory",
+	"persona_left_leg":       "leftleg",
+	"persona_right_leg":      "rightleg",
+	"persona_left_arm":       "leftarm",
+	"persona_right_arm":      "rightarm",
+	"persona_classic_skin":   "classicskin",
+}
+
+// personaPieceTintLoginNames is the reverse of personaPieceTintWireNames.
+var personaPieceTintLoginNames = func() map[string]string {
+	m := make(map[string]string, len(personaPieceTintWireNames))
+	for login, wire := range personaPieceTintWireNames {
+		m[wire] = login
+	}
+	return m
+}()
+
 // personaPieceTintLoginType converts v2168 wire names back to the persona_* names used in login data.
 func personaPieceTintLoginType(pieceType string) string {
-	if pieceType == "hands" {
-		return "persona_hand"
+	if login, ok := personaPieceTintLoginNames[pieceType]; ok {
+		return login
 	}
 	if pieceType == "unsupported" {
 		return pieceType
