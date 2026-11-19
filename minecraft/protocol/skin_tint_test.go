@@ -47,3 +47,26 @@ func TestPersonaPieceTintRoundTrip(t *testing.T) {
 		t.Fatalf("read back as %q", out.PieceType)
 	}
 }
+
+// A tint of a piece type the client does not know is not written: the client would reject the packet.
+func TestPersonaPieceTintUnknownDropped(t *testing.T) {
+	skin := Skin{SkinImageWidth: 1, SkinImageHeight: 1, SkinData: make([]byte, 4), PieceTintColours: []PersonaPieceTintColour{
+		{PieceType: "persona_facial_hair"}, {PieceType: "persona_beard_of_doom"}, {PieceType: "persona_hair"},
+	}}
+	buf := bytes.NewBuffer(nil)
+	skin.Marshal(NewWriter(buf, 0))
+	if bytes.Contains(buf.Bytes(), []byte("beard_of_doom")) {
+		t.Fatal("unknown piece type written")
+	}
+	var back Skin
+	back.Marshal(NewReader(bytes.NewReader(buf.Bytes()), 0, false))
+	if len(back.PieceTintColours) != 2 || back.PieceTintColours[0].PieceType != "persona_facial_hair" || back.PieceTintColours[1].PieceType != "persona_hair" {
+		t.Fatalf("tints read back: %+v", back.PieceTintColours)
+	}
+	if len(skin.PieceTintColours) != 3 {
+		t.Error("writing changed the skin passed")
+	}
+	if PieceTypeCoCo != 28 || PieceTypeUnsupported != 29 {
+		t.Errorf("CoCo %d, Unsupported %d, want 28 and 29", PieceTypeCoCo, PieceTypeUnsupported)
+	}
+}

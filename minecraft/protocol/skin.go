@@ -96,7 +96,13 @@ func (x *Skin) Marshal(r IO) {
 	r.Uint8(&x.ArmSize)
 	r.BEARGB(&x.SkinColour)
 	Slice(r, &x.PersonaPieces)
-	Slice(r, &x.PieceTintColours)
+	if _, writing := r.(*Writer); writing {
+		// A tint of a piece type the client does not know makes it reject the whole packet.
+		tints := validPersonaPieceTints(x.PieceTintColours)
+		Slice(r, &tints)
+	} else {
+		Slice(r, &x.PieceTintColours)
+	}
 	if err := x.validate(); err != nil {
 		r.InvalidValue(fmt.Sprintf("Skin %v", x.SkinID), "serialised skin", err.Error())
 	}
@@ -204,6 +210,7 @@ const (
 	PieceTypeCapes
 	PieceTypeClassicSkin
 	PieceTypeEmote
+	PieceTypeCoCo
 	PieceTypeUnsupported
 )
 
@@ -277,6 +284,32 @@ var personaPieceTintWireNames = map[string]string{
 	"persona_left_arm":       "leftarm",
 	"persona_right_arm":      "rightarm",
 	"persona_classic_skin":   "classicskin",
+}
+
+// personaPieceTintWireTypes holds every wire name the client accepts for a tint: the persona::PieceType
+// enum names in lower case.
+var personaPieceTintWireTypes = map[string]bool{
+	"unknown": true, "skeleton": true, "body": true, "skin": true, "bottom": true, "feet": true,
+	"dress": true, "top": true, "high_pants": true, "hands": true, "outerwear": true, "facialhair": true,
+	"mouth": true, "eyes": true, "hair": true, "hood": true, "back": true, "faceaccessory": true,
+	"head": true, "legs": true, "leftleg": true, "rightleg": true, "arms": true, "leftarm": true,
+	"rightarm": true, "capes": true, "classicskin": true, "emote": true, "coco": true, "unsupported": true,
+}
+
+// validPersonaPieceTints returns the tints of tints whose piece type the client accepts.
+func validPersonaPieceTints(tints []PersonaPieceTintColour) []PersonaPieceTintColour {
+	for i, t := range tints {
+		if !personaPieceTintWireTypes[personaPieceTintWireType(t.PieceType)] {
+			valid := append([]PersonaPieceTintColour(nil), tints[:i]...)
+			for _, t := range tints[i+1:] {
+				if personaPieceTintWireTypes[personaPieceTintWireType(t.PieceType)] {
+					valid = append(valid, t)
+				}
+			}
+			return valid
+		}
+	}
+	return tints
 }
 
 // personaPieceTintLoginNames is the reverse of personaPieceTintWireNames.
