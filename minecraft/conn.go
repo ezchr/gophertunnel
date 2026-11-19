@@ -1279,7 +1279,7 @@ func (conn *Conn) startGame() {
 		WorldGameMode:                data.WorldGameMode,
 		Hardcore:                     data.Hardcore,
 		XBLBroadcastMode:             data.XBLBroadcastMode,
-		PlatformBroadcastMode:        data.PlatformBroadcastMode,
+		PlatformBroadcastMode:        platformBroadcastMode(data),
 		ServerAuthoritativeInventory: data.ServerAuthoritativeInventory,
 		PlayerPermissions:            data.PlayerPermissions,
 		Experiments:                  data.Experiments,
@@ -1750,4 +1750,14 @@ func (conn *Conn) closeErr(op string) error {
 	default:
 		return conn.wrap(net.ErrClosed, op)
 	}
+}
+
+// platformBroadcastMode is the PlatformBroadcastMode of the StartGame packet: GameData's, or its
+// XBLBroadcastMode when that is left unset, as before GameData had the field (servers that set only the
+// Xbox Live mode keep their invites and Friends-tab joins working).
+func platformBroadcastMode(data GameData) int32 {
+	if data.PlatformBroadcastMode == 0 {
+		return data.XBLBroadcastMode
+	}
+	return data.PlatformBroadcastMode
 }
